@@ -109,17 +109,18 @@ with `include_str!`:
   hero image, with "MINECRAFT: JAVA EDITION" and **Play** /
   **Installations** tabs in the top bar (the active tab gets a short
   green underline).
-- Chunky, square, bevelled buttons: the big PLAY button is
-  `#3c8527` green with a light top highlight and a dark `#1d4d13`
-  bottom edge (inset box-shadows), straddling the hero and the bottom
-  bar; its label is drawn in the pixel font from `pixelart.rs`.
+- Softly rounded controls and panels (8-20px radii, translucent
+  edges rather than hard black outlines). The big PLAY button is a
+  `#3c8527` green gradient with a gentle darker lip along its bottom
+  edge and a drop shadow, straddling the hero and the bottom bar; its
+  label is drawn in the pixel font from `pixelart.rs`.
 - A light-green notice banner (`#84d65a`) in the hero's corner for
   install progress and launch/install outcomes.
 - Focus is a bold 3px white outline on everything focusable - a
   controller (or a finger) is the only pointer, so the highlighted
   control must be unmistakable.
 
-All artwork - the crimson-forest key art, the stone "MINECRAFT / JAVA
+All artwork - the Nether wastes key art, the stone "MINECRAFT / JAVA
 EDITION" wordmark and the grass-block icon - is original and rendered by
 `examples/gen_art.rs` (a small voxel ray tracer with procedural 16x16
 block textures). No Mojang artwork, fonts or textures are bundled; the

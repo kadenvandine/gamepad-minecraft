@@ -176,16 +176,19 @@ GAMEPAD_MINECRAFT_CLIENT_ID=<your-app-id> cargo run --example auth_cli
 
 ### Artwork
 
-The Play tab's key art (an original crimson-forest Nether scene), the
+The Play tab's key art (an original Nether wastes scene), the
 "MINECRAFT / JAVA EDITION" wordmark and the grass-block icon are not
 Mojang assets: they're rendered by `examples/gen_art.rs`, a small voxel
 ray tracer with procedural block textures, and committed as PNGs under
-`data/art/` that the launcher embeds with `include_bytes!`. To change
+`data/art/` that the launcher embeds with `include_bytes!`. The player
+in the key art wears `data/art/hero-skin.png`, a standard 64x64 skin
+with slim arms; swap in another to change the character. To change
 them, edit the generator and re-run it:
 
 ```sh
 cargo run --release --example gen_art            # writes data/art/*.png
 cargo run --release --example gen_art -- preview # quick low-res hero in target/
+cargo run --release --example gen_art -- closeup # close-up of the player in target/
 ```
 
 ## Setting up Microsoft sign-in

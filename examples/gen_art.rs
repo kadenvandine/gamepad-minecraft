@@ -5,10 +5,13 @@
 
 //! Generates the launcher's bundled artwork into `data/art/`:
 //!
-//! - `hero.png` - the Play tab's key art: an original crimson-forest
-//!   Nether scene, rendered by the small voxel ray tracer below
-//!   (procedural 16x16 block textures, flood-filled block light, sun
-//!   shafts through the canopy, volumetric fog, bloom).
+//! - `hero.png` - the Play tab's key art: an original Nether wastes
+//!   scene - a player in enchanted, red-trimmed netherite armour on a
+//!   netherrack plateau above a lava sea, lavafalls pouring through the
+//!   haze - rendered by the small voxel ray tracer below (procedural
+//!   16x16 block textures, flood-filled block light, light shafts
+//!   through the cliffs, volumetric fog, bloom). The player wears the
+//!   skin in `data/art/hero-skin.png`, mapped texel for texel.
 //! - `logo.png` - the blocky stone "MINECRAFT" wordmark with "JAVA
 //!   EDITION" underneath.
 //! - `grass_block.png` - the isometric grass block icon shown beside the
@@ -21,6 +24,7 @@
 //!
 //!     cargo run --release --example gen_art            # full quality
 //!     cargo run --release --example gen_art -- preview # quick, low-res
+//!     cargo run --release --example gen_art -- closeup # just the player
 
 use std::ops::{Add, Mul, Neg, Sub};
 use std::path::Path;
@@ -157,22 +161,17 @@ fn fbm2(x: f32, z: f32, seed: u32) -> f32 {
 
 const AIR: u8 = 0;
 const NETHERRACK: u8 = 1;
-const NYLIUM: u8 = 2;
-const STEM: u8 = 3;
-const WART: u8 = 4;
-const SHROOM: u8 = 5;
-const LAVA: u8 = 6;
-const BLACKSTONE: u8 = 7;
-const MAGMA: u8 = 8;
+const QUARTZ_ORE: u8 = 2;
+const LAVA: u8 = 3;
+const BLACKSTONE: u8 = 4;
+const MAGMA: u8 = 5;
+const GLOWSTONE: u8 = 6;
 // Everything from here on is a "cross" plant: two diagonal textured
 // planes inside the cell rather than a full cube.
-const VINES: u8 = 9;
-const ROOTS: u8 = 10;
-const FUNGUS: u8 = 11;
-const FIRE: u8 = 12;
+const FIRE: u8 = 7;
 
 fn is_cross(b: u8) -> bool {
-    b >= VINES
+    b >= FIRE
 }
 fn is_opaque(b: u8) -> bool {
     b != AIR && !is_cross(b)
@@ -199,17 +198,80 @@ fn glowing(col: V3, k: f32) -> Texel {
 }
 const CLEAR: Texel = Texel { col: v3(0.0, 0.0, 0.0), emit: v3(0.0, 0.0, 0.0), alpha: false };
 
-fn netherrack(tx: i32, ty: i32, s: u32) -> Texel {
-    // Clumpy: 2x2-ish clusters plus single-pixel specks.
-    let clump = r3(tx / 2, ty / 2, (tx + ty) % 3, s);
-    let speck = r3(tx, ty, 7, s);
-    let mut col = mix(rgb(0x5a2828), rgb(0x8c3d39), clump);
-    if speck < 0.12 {
-        col = rgb(0x3e191b);
-    } else if speck > 0.94 {
-        col = rgb(0xa9524a);
+/// Netherrack, as the game draws it: one 16x16 tile repeated on every
+/// face of every block (no per-block variation, so the block grid shows
+/// on big surfaces). A fine mottle of muted maroons: small lumps, light
+/// in the middle and each its own shade, set in staggered rows with dark
+/// seams between them - a faint diamond lattice from a distance.
+fn netherrack(tx: i32, ty: i32) -> Texel {
+    const PALETTE: [u32; 7] = [0x3a1414, 0x4f1d1c, 0x632725, 0x763331, 0x8a403c, 0xa04f4a, 0xb2605a];
+    // Distances to the nearest two lump centres (wrapping), and the
+    // nearest one's shade.
+    let (mut f1, mut f2, mut shade) = (f32::MAX, f32::MAX, 0.0);
+    for gy in 0..4 {
+        for gx in 0..4 {
+            let cx = (gx * 4 + (gy % 2) * 2) as f32 + r3(gx, gy, 1, 66) * 2.0;
+            let cy = (gy * 4) as f32 + r3(gx, gy, 2, 66) * 2.0;
+            let wrap = |d: f32| d.abs().min(16.0 - d.abs());
+            let (dx, dy) = (wrap(tx as f32 + 0.5 - cx), wrap(ty as f32 + 0.5 - cy));
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < f1 {
+                (f2, f1, shade) = (f1, dist, r3(gx, gy, 3, 66));
+            } else if dist < f2 {
+                f2 = dist;
+            }
+        }
     }
-    solid(col)
+    let seam = f2 - f1;
+    let v = (seam / 2.0).min(1.0) * 0.6 + shade * 0.3 + (r3(tx, ty, 0, 67) - 0.5) * 0.7;
+    let mut level = ((v * 4.6).round() as i32).clamp(0, 6);
+    if seam < 0.45 {
+        level = level.min(1);
+    }
+    solid(rgb(PALETTE[level as usize]))
+}
+
+/// Nether quartz ore: netherrack with crescent-shaped veins of milky
+/// quartz, `W` bright, `w` lit, `q` shadowed.
+fn quartz_ore(tx: i32, ty: i32) -> Texel {
+    const VEINS: [&str; 16] = [
+        "................",
+        "....wWWw........",
+        "..wWWwqqWw......",
+        ".wWq.....qWw....",
+        ".Wq.......qW....",
+        ".q....wWw..q....",
+        ".....wWqWw......",
+        "....wWq..qW..wW.",
+        "...qWq....q.wWq.",
+        "....q......wWq..",
+        "..wW......wWq...",
+        ".wWWw.....qq....",
+        ".qqWWw...wW.....",
+        "...qqWw.wWq.....",
+        ".....qq.qq......",
+        "................",
+    ];
+    match VEINS[ty as usize].as_bytes()[tx as usize] {
+        b'W' => solid(rgb(0xf4ecdc)),
+        b'w' => solid(rgb(0xd2c4ac)),
+        b'q' => solid(rgb(0x8a7c68)),
+        _ => netherrack(tx, ty),
+    }
+}
+
+/// Worley-ish distance to the nearest of a few jittered points in a
+/// 16x16 tile, wrapping - the cellular blobs of the lava texture.
+fn cells16(tx: i32, ty: i32, seed: u32) -> f32 {
+    let mut best = f32::MAX;
+    for i in 0..7 {
+        let cx = r3(i, 0, 0, seed) * 16.0;
+        let cy = r3(i, 1, 0, seed) * 16.0;
+        let dx = ((tx as f32 + 0.5 - cx).abs()).min(16.0 - (tx as f32 + 0.5 - cx).abs());
+        let dy = ((ty as f32 + 0.5 - cy).abs()).min(16.0 - (ty as f32 + 0.5 - cy).abs());
+        best = best.min((dx * dx + dy * dy).sqrt());
+    }
+    best
 }
 
 fn texel(b: u8, face: Face, tx: i32, ty: i32, cell: (i32, i32, i32)) -> Texel {
@@ -217,59 +279,20 @@ fn texel(b: u8, face: Face, tx: i32, ty: i32, cell: (i32, i32, i32)) -> Texel {
     let r = r3(tx, ty, 1, s);
     let r2 = r3(tx, ty, 2, s);
     match b {
-        NETHERRACK => netherrack(tx, ty, s),
-        NYLIUM => {
-            let fringe = 2 + (h3(tx, 0, 0, s) % 4) as i32;
-            if face == Face::Side && ty >= fringe {
-                return netherrack(tx, ty, s);
-            }
-            let mut col = mix(rgb(0x7a1116), rgb(0xa8201e), r);
-            if r2 < 0.16 {
-                col = rgb(0x560c14);
-            } else if r2 > 0.92 {
-                col = rgb(0xc8402e);
-            }
-            solid(col)
-        }
-        STEM => {
-            if face != Face::Side {
-                let d = (tx as f32 - 7.5).abs().max((ty as f32 - 7.5).abs());
-                if d < 6.0 {
-                    let ring = (d as i32) % 2 == 0;
-                    let col = if ring { rgb(0x8a3a3a) } else { rgb(0x6a2a30) };
-                    return solid(col * (0.9 + r * 0.2));
-                }
-            }
-            // Vertical bark stripes, with the odd glowing fleck crimson
-            // stems are known for.
-            let stripe = r3(tx, ty / 4, 3, s);
-            const BARK: [u32; 4] = [0x3a0f1e, 0x4e1628, 0x5e1c30, 0x742638];
-            let col = rgb(BARK[(stripe * 3.99) as usize]);
-            solid(col * (0.9 + r * 0.2))
-        }
-        WART => {
-            let mut col = mix(rgb(0x660a0c), rgb(0x941616), r);
-            if r2 > 0.86 {
-                col = rgb(0xb42a22);
-            } else if r2 < 0.1 {
-                col = rgb(0x46060a);
-            }
-            solid(col)
-        }
-        SHROOM => {
-            let grid = (tx + (ty / 4) * 2) % 4 == 0 || (ty + (tx / 4)) % 4 == 0;
-            let col = if grid {
-                rgb(0xc8622a)
-            } else if r > 0.7 {
-                rgb(0xffd27a)
-            } else {
-                rgb(0xf3a04a)
-            };
-            glowing(col, 2.4)
-        }
+        NETHERRACK => netherrack(tx, ty),
+        QUARTZ_ORE => quartz_ore(tx, ty),
         LAVA => {
-            let n = noise2(tx as f32 / 3.0 + cell.0 as f32 * 5.3, ty as f32 / 3.0 + cell.2 as f32 * 5.3, 11);
-            glowing(mix(rgb(0xb8380a), rgb(0xffb43a), n * n), 3.2)
+            // Bright yellow-orange blobs threaded with darker veins, the
+            // tile shifted per block so neighbours don't repeat.
+            let seed = 11 + (h3(cell.0, 0, cell.2, 3) % 4);
+            let d = cells16(tx, ty, seed);
+            let t = (d / 5.0).min(1.0);
+            let col = if t < 0.35 {
+                mix(rgb(0xffe27a), rgb(0xffb43a), t / 0.35)
+            } else {
+                mix(rgb(0xff9a2a), rgb(0xc8400e), (t - 0.35) / 0.65)
+            };
+            glowing(col * (0.92 + r * 0.16), 3.4)
         }
         BLACKSTONE => {
             let mut col = mix(rgb(0x1c181e), rgb(0x3a3238), r3(tx / 2, ty, 4, s));
@@ -286,37 +309,15 @@ fn texel(b: u8, face: Face, tx: i32, ty: i32, cell: (i32, i32, i32)) -> Texel {
                 solid(mix(rgb(0x30100a), rgb(0x52200e), r))
             }
         }
-        VINES => {
-            let center = 7.5 + ((ty as f32) * 0.9 + s as f32).sin() * 2.2;
-            if (tx as f32 - center).abs() < 1.4 + r2 * 0.9 {
-                solid(mix(rgb(0x8a1212), rgb(0xc42a22), r))
+        GLOWSTONE => {
+            let col = if r > 0.75 {
+                rgb(0xfff0b0)
+            } else if r < 0.25 {
+                rgb(0xb07a30)
             } else {
-                CLEAR
-            }
-        }
-        ROOTS => {
-            for (i, x0) in [3.0f32, 7.5, 12.0].iter().enumerate() {
-                let height = 8 + (h3(i as i32, 0, 0, s) % 8) as i32;
-                let lean = (r3(i as i32, 1, 0, s) - 0.5) * 0.5;
-                let x = x0 + (15 - ty) as f32 * lean;
-                if ty > 15 - height && (tx as f32 - x).abs() < 1.0 {
-                    return solid(mix(rgb(0x8a1426), rgb(0xd0384a), r));
-                }
-            }
-            CLEAR
-        }
-        FUNGUS => {
-            if (10..16).contains(&ty) && (7..9).contains(&tx) {
-                return solid(rgb(0x6a2a1a));
-            }
-            if (3..10).contains(&ty) && (tx as f32 - 7.5).abs() < (ty - 2) as f32 * 0.95 {
-                return if r2 > 0.82 {
-                    glowing(rgb(0xffc070), 1.0)
-                } else {
-                    solid(mix(rgb(0x9a1a18), rgb(0xc42a20), r))
-                };
-            }
-            CLEAR
+                rgb(0xf0c060)
+            };
+            glowing(col, 2.0)
         }
         FIRE => {
             let height = 5.0 + 10.0 * noise2(tx as f32 * 0.55, s as f32 * 0.001, 13);
@@ -327,26 +328,29 @@ fn texel(b: u8, face: Face, tx: i32, ty: i32, cell: (i32, i32, i32)) -> Texel {
                 CLEAR
             }
         }
-        _ => solid(rgb(0xff00ff)),
+        _ => {
+            let _ = face;
+            solid(rgb(0xff00ff))
+        }
     }
 }
 
 /// Coloured block light each emitter seeds into the light volume.
 fn emission(b: u8) -> V3 {
     match b {
-        SHROOM => v3(2.2, 1.15, 0.45),
-        LAVA => v3(2.6, 0.85, 0.18),
+        LAVA => v3(2.6, 0.62, 0.1),
         FIRE => v3(3.2, 1.5, 0.5),
         MAGMA => v3(0.9, 0.3, 0.08),
+        GLOWSTONE => v3(2.0, 1.4, 0.6),
         _ => V3::default(),
     }
 }
 
 // ─── World ──────────────────────────────────────────────────────────
 
-const W: i32 = 72;
-const H: i32 = 44;
-const D: i32 = 112;
+const W: i32 = 128;
+const H: i32 = 64;
+const D: i32 = 128;
 
 struct World {
     cells: Vec<u8>,
@@ -380,14 +384,33 @@ impl World {
     }
 }
 
-/// Where the hero character stands, and the campfire beside them.
-const PLAYER_POS: V3 = v3(36.3, 2.0, 5.2);
-const FIRE_CELL: (i32, i32, i32) = (32, 2, 8);
-/// Direction *towards* the light: high above and behind the scene, so
-/// shafts slant down towards the camera.
+/// Top block of the plateau the hero stands on.
+const PLATEAU: i32 = 19;
+/// Surface of the lava sea below it.
+const SEA: i32 = 8;
+/// Where the hero character stands, on the plateau.
+const PLAYER_POS: V3 = v3(64.3, PLATEAU as f32 + 1.0, 14.0);
+/// Direction *towards* the light: the glow of the lava sea beyond the
+/// far cliffs, high and behind the scene, so the haze is backlit and
+/// shafts slant down towards the camera through gaps in the cliffs.
 fn sun_dir() -> V3 {
-    v3(-0.18, 1.0, 0.62).norm()
+    v3(0.12, 1.0, 0.75).norm()
 }
+
+/// Ridged noise in [0, 1]: sharp crests, like eroded netherrack.
+fn ridged(x: f32, z: f32, seed: u32) -> f32 {
+    1.0 - (fbm2(x, z, seed) * 2.0 - 1.0).abs()
+}
+
+/// The far cliff wall's front face (z) at a given x.
+fn wall_z(x: i32) -> i32 {
+    100 + (fbm2(x as f32 * 0.06, 0.5, 50) * 18.0) as i32
+}
+
+/// Lavafalls: (x, width, fall from y). The first three pour down the far
+/// cliffs; the last is a thin stream falling out of the fog onto the
+/// ridges mid-scene, like a leak in the ceiling far above.
+const LAVAFALLS: [(i32, i32, i32); 4] = [(30, 4, 56), (82, 2, 60), (104, 3, 50), (71, 1, 63)];
 
 fn build_world() -> World {
     let mut w = World {
@@ -397,175 +420,138 @@ fn build_world() -> World {
         ground: vec![0; (W * D) as usize],
     };
 
-    // Ground: rolling netherrack under crimson nylium, a flat clearing
-    // for the hero, rising blackstone walls framing both sides, and a
-    // lava lake glowing in the distance.
+    // Terrain: a lava sea with netherrack ridges rising out of it, a
+    // broad flat plateau in the foreground for the hero, a lower shelf
+    // with a lava pool beside it, and towering cliffs at the back.
     for z in 0..D {
         for x in 0..W {
             let (fx, fz) = (x as f32, z as f32);
-            let mut g = 1.0 + fbm2(fx * 0.09, fz * 0.09, 1) * 2.4;
-            let clearing = ((fx - 36.0).abs() / 16.0).max((fz - 10.0).abs() / 16.0);
-            if clearing < 1.0 {
-                g = mix(v3(1.0, 0.0, 0.0), v3(g, 0.0, 0.0), clearing.powi(2)).x;
+            // Rolling lowland, mostly just under the lava.
+            let mut g = 1.0 + fbm2(fx * 0.05, fz * 0.05, 1) * 7.0;
+            // Ridges and islands, taller further back.
+            let rise = ((fz - 30.0) / 60.0).clamp(0.0, 1.0);
+            let ridge = ridged(fx * 0.035, fz * 0.045, 2);
+            g += (ridge - 0.7).max(0.0) * (24.0 + rise * 24.0) * (0.6 + fbm2(fx * 0.1, fz * 0.1, 3) * 0.8);
+            g = g.min(10.0 + rise * 10.0);
+
+            // The plateau: a rounded rectangle with a ragged rim.
+            let px = (fx - 64.0) / 10.0;
+            let pz = (fz - 12.0) / 12.0;
+            let rim = 1.0 + (fbm2(fx * 0.12, fz * 0.12, 4) - 0.5) * 0.35;
+            let plat = (px.abs().powf(3.0) + pz.abs().powf(3.0)).powf(1.0 / 3.0);
+            if plat < rim {
+                g = PLATEAU as f32;
+            } else if plat < rim + 0.18 {
+                // Stepped, crumbling slopes just past the rim.
+                let k = (plat - rim) / 0.18;
+                g = g.max(PLATEAU as f32 - k * 11.0 - fbm2(fx * 0.4, fz * 0.4, 5) * 3.0);
             }
-            let edge = ((14.0 - fx).max(fx - 57.0)).max(0.0);
-            g += edge * edge * 0.12 * (0.6 + fbm2(fx * 0.2, fz * 0.2, 2) * 0.8);
-            let lake = ((fx - 36.0) / 20.0).powi(2) + ((fz - 92.0) / 13.0).powi(2);
-            let mut lava = false;
-            if lake < 1.0 {
-                g = 0.0;
-                lava = true;
+            // A lower shelf off to the right, holding a lava pool.
+            let sx = (fx - 83.0) / 10.0;
+            let sz = (fz - 24.0) / 9.0;
+            let shelf = sx * sx + sz * sz;
+            if shelf < 1.0 {
+                g = g.max(PLATEAU as f32 - 3.0);
             }
-            let g = (g as i32).min(H - 4);
+
+            // The far cliffs.
+            let wz = wall_z(x);
+            if z >= wz {
+                let gap = fbm2(fx * 0.09, 3.0, 51);
+                let top = if gap > 0.62 { 24.0 } else { (H - 2) as f32 };
+                g = g.max(top - (fbm2(fx * 0.3, fz * 0.3, 52) * 4.0));
+            }
+
+            let g = (g as i32).clamp(1, H - 2);
             w.ground[(z * W + x) as usize] = g;
             for y in 0..=g {
-                let rocky = edge > 1.5 && fbm2(fx * 0.3, fy_hash(y, fz), 3) > 0.45;
-                w.set(x, y, z, if rocky { BLACKSTONE } else { NETHERRACK });
+                let rocky = z >= wz && fbm2(fx * 0.2, y as f32 * 0.2 + fz * 0.1, 6) > 0.6;
+                let b = if rocky {
+                    BLACKSTONE
+                } else if r3(x, y, z, 20) < 0.02 {
+                    QUARTZ_ORE
+                } else {
+                    NETHERRACK
+                };
+                w.set(x, y, z, b);
             }
-            if lava {
-                w.set(x, 0, z, LAVA);
-            } else if edge < 1.5 && fbm2(fx * 0.15, fz * 0.15, 4) > 0.32 {
-                w.set(x, g, z, NYLIUM);
+            // Lava fills every hollow up to the sea's surface.
+            for y in g + 1..=SEA {
+                w.set(x, y, z, LAVA);
             }
-            if !lava && r3(x, g, z, 21) < 0.012 && (z > 22 || (fx - 35.0).abs() > 8.0) {
+            if shelf < 0.45 && g == PLATEAU - 3 {
+                w.set(x, g, z, LAVA);
+            }
+            if g > SEA && r3(x, g, z, 21) < 0.01 && plat > rim {
                 w.set(x, g, z, MAGMA);
             }
         }
     }
 
-    // Canopy: a ceiling of wart blocks with a few ragged openings for
-    // the light shafts.
-    for z in 0..D {
-        for x in 0..W {
-            let (fx, fz) = (x as f32, z as f32);
-            let lo = 23 + (fbm2(fx * 0.08, fz * 0.08, 5) * 6.0) as i32;
-            let mut hole = fbm2(fx * 0.11, fz * 0.11, 6) > 0.63;
-            for (hx, hz, r) in [(34.0, 33.0, 4.5), (22.0, 24.0, 3.0), (49.0, 40.0, 3.5), (40.0, 58.0, 4.0)] {
-                if ((fx - hx).powi(2) + (fz - hz).powi(2)).sqrt() < r + fbm2(fx * 0.5, fz * 0.5, 7) * 2.0 {
-                    hole = true;
-                }
-            }
-            if hole || z > 100 {
-                continue;
-            }
-            for y in lo..34 {
-                w.set(x, y, z, WART);
-            }
-            if r3(x, lo, z, 8) < 0.025 {
-                w.set(x, lo, z, SHROOM);
+    // A few patches of magma on the plateau, kept clear of the hero.
+    for z in 2..36 {
+        for x in 36..90 {
+            let near_hero = (x - 64i32).abs() < 7 && (8..22).contains(&z);
+            if w.ground_at(x, z) == PLATEAU && !near_hero && fbm2(x as f32 * 0.3, z as f32 * 0.3, 22) > 0.72 {
+                w.set(x, PLATEAU, z, MAGMA);
             }
         }
     }
 
-    // Huge crimson fungi: stems up to the canopy, each crowned with a
-    // hanging curtain of wart blocks studded with shroomlights.
-    let trees: [(i32, i32, i32); 17] = [
-        (24, 9, 1),
-        (51, 6, 1),
-        (11, 22, 2),
-        (27, 30, 1),
-        (47, 25, 2),
-        (63, 19, 2),
-        (36, 46, 1),
-        (21, 48, 2),
-        (53, 51, 1),
-        (7, 40, 1),
-        (66, 42, 2),
-        (29, 64, 2),
-        (45, 68, 1),
-        (15, 70, 1),
-        (58, 73, 2),
-        (37, 80, 1),
-        (24, 84, 1),
-    ];
-    for (i, &(tx, tz, r)) in trees.iter().enumerate() {
-        let seed = 100 + i as u32;
-        let base = w.ground_at(tx, tz);
-        let top = 23 + (fbm2(tx as f32 * 0.08, tz as f32 * 0.08, 5) * 6.0) as i32;
-        let rr = r as f32 + 0.45;
-        for y in base..top + 1 {
-            for dz in -r..=r {
-                for dx in -r..=r {
-                    if ((dx * dx + dz * dz) as f32).sqrt() <= rr {
-                        w.set(tx + dx, y, tz + dz, STEM);
-                    }
-                }
-            }
-        }
-        let cap_r = (r + 4 + (hash(seed) % 3) as i32) as f32;
-        let cap_drop = 5 + (hash(seed + 1) % 4) as i32;
-        let ri = cap_r as i32 + 1;
-        for dz in -ri..=ri {
-            for dx in -ri..=ri {
-                let d = ((dx * dx + dz * dz) as f32).sqrt();
-                if d > cap_r + 0.4 {
+    // Lavafalls: a column of lava down the cliff face (or out of the
+    // sky), pooling where it lands.
+    for (i, &(lx, width, from)) in LAVAFALLS.iter().enumerate() {
+        let thin = i == LAVAFALLS.len() - 1;
+        for x in lx..lx + width {
+            let face = if thin { 66 } else { wall_z(x) - 1 };
+            for z in face - 1..=face {
+                if thin && z != face {
                     continue;
                 }
-                let (x, z) = (tx + dx, tz + dz);
-                let edge = d > cap_r - 1.2;
-                let len = if edge {
-                    cap_drop - (r3(x, 0, z, seed) * 3.0) as i32
-                } else {
-                    1 + (r3(x, 1, z, seed) * 2.0) as i32
-                };
-                for y in (top - len)..=top {
-                    let inner = d > cap_r - 2.4 && d <= cap_r - 1.2;
-                    let b = if inner && r3(x, y, z, seed + 2) < 0.12 { SHROOM } else { WART };
-                    w.set(x, y, z, b);
-                }
-                if edge && r3(x, 2, z, seed) < 0.12 {
-                    w.set(x, top - len - 1, z, SHROOM);
+                for y in (SEA..=from).rev() {
+                    if is_opaque(w.get(x, y, z)) && w.get(x, y, z) != LAVA {
+                        // Splash: a small pool where the stream lands.
+                        for dz in -2..=2 {
+                            for dx in -2..=2 {
+                                if dx * dx + dz * dz <= 5 && w.get(x + dx, y + 1, z + dz) == AIR {
+                                    w.set(x + dx, y, z + dz, LAVA);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    w.set(x, y, z, LAVA);
                 }
             }
         }
     }
 
-    // Weeping vines under every overhang, plants on the ground.
+    // Glowstone clusters clinging high on the cliffs.
+    for x in 0..W {
+        let wz = wall_z(x);
+        for y in 40..H - 1 {
+            if r3(x, y, 0, 23) < 0.025 && w.get(x, y, wz - 1) == AIR {
+                w.set(x, y, wz - 1, GLOWSTONE);
+                if r3(x, y, 1, 23) < 0.5 {
+                    w.set(x, y - 1, wz - 1, GLOWSTONE);
+                }
+            }
+        }
+    }
+
+    // Fires flickering on netherrack near the lava.
     for z in 0..D {
         for x in 0..W {
-            for y in (2..H - 1).rev() {
-                if w.get(x, y, z) == AIR && matches!(w.get(x, y + 1, z), WART | SHROOM) {
-                    if r3(x, y, z, 30) < 0.16 {
-                        let len = 1 + (r3(x, y, z, 31) * 8.0) as i32;
-                        for k in 0..len {
-                            if w.get(x, y - k, z) != AIR || y - k <= w.ground_at(x, z) + 2 {
-                                break;
-                            }
-                            w.set(x, y - k, z, VINES);
-                        }
-                    }
-                    break;
-                }
-            }
             let g = w.ground_at(x, z);
-            if w.get(x, g, z) == NYLIUM && w.get(x, g + 1, z) == AIR {
-                let near_hero = (x - 36).abs() < 5 && (3..10).contains(&z);
-                let p = r3(x, g, z, 32);
-                if !near_hero && p < 0.06 {
-                    w.set(x, g + 1, z, ROOTS);
-                } else if !near_hero && p < 0.08 {
-                    w.set(x, g + 1, z, FUNGUS);
-                }
+            if g <= SEA || w.get(x, g, z) == LAVA || w.get(x, g + 1, z) != AIR {
+                continue;
             }
-        }
-    }
-    // Extra foreground plants framing the bottom corners.
-    for z in 0..7 {
-        for x in (16..30).chain(44..58) {
-            let g = w.ground_at(x, z);
-            if w.get(x, g + 1, z) == AIR && r3(x, z, 0, 33) < 0.18 {
-                w.set(x, g + 1, z, if r3(x, z, 1, 33) < 0.8 { ROOTS } else { FUNGUS });
+            let near_lava = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                .iter()
+                .any(|&(dx, dz)| w.get(x + dx, g, z + dz) == LAVA || w.get(x + dx, g - 1, z + dz) == LAVA);
+            if near_lava && r3(x, g, z, 24) < 0.18 {
+                w.set(x, g + 1, z, FIRE);
             }
-        }
-    }
-
-    // The campfire: a fire on a netherrack hearth ringed by blackstone.
-    let (fx, fy, fz) = FIRE_CELL;
-    w.set(fx, fy - 1, fz, NETHERRACK);
-    w.set(fx, fy, fz, FIRE);
-    for (dx, dz) in [(-1, 0), (1, 0), (0, 1), (0, -1)] {
-        if r3(dx, 0, dz, 40) < 0.7 {
-            w.set(fx + dx, fy - 1, fz + dz, BLACKSTONE);
         }
     }
 
@@ -574,9 +560,6 @@ fn build_world() -> World {
     w
 }
 
-fn fy_hash(y: i32, fz: f32) -> f32 {
-    y as f32 * 0.37 + fz * 0.3
-}
 
 /// Minecraft-style flood fill of coloured light out of every emitter,
 /// decaying per block and blocked by opaque cells - then sampled
@@ -616,19 +599,25 @@ fn compute_block_light(w: &World) -> Vec<V3> {
 fn compute_sun_visibility(w: &World) -> Vec<f32> {
     let dir = sun_dir();
     let mut sun = vec![0.0; w.cells.len()];
-    for z in 0..D {
-        for y in 0..H {
-            for x in 0..W {
-                if is_opaque(w.get(x, y, z)) {
-                    continue;
+    // One z-slice per chunk, spread across threads.
+    std::thread::scope(|sc| {
+        for (z, slice) in sun.chunks_mut((W * H) as usize).enumerate() {
+            sc.spawn(move || {
+                let z = z as i32;
+                for y in 0..H {
+                    for x in 0..W {
+                        if is_opaque(w.get(x, y, z)) {
+                            continue;
+                        }
+                        let o = v3(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+                        if trace_world(w, o, dir, 200.0, true).is_none() {
+                            slice[(y * W + x) as usize] = 1.0;
+                        }
+                    }
                 }
-                let o = v3(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
-                if trace_world(w, o, dir, 200.0, true).is_none() {
-                    sun[idx(x, y, z)] = 1.0;
-                }
-            }
+            });
         }
-    }
+    });
     sun
 }
 
@@ -778,19 +767,80 @@ fn cross_hit(o: V3, d: V3, cell: [i32; 3], b: u8, t0: f32, t1: f32) -> Option<Hi
 
 // ─── The hero character ─────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
-enum Part {
-    Head,
-    Body,
-    Arm,
-    Leg,
+/// The hero's skin: a standard 64x64 player skin with slim (3px) arms,
+/// read texel for texel, outer layers included.
+struct Skin {
+    rgba: Vec<[u8; 4]>,
+}
+
+impl Skin {
+    fn load() -> Skin {
+        let bytes = glib::Bytes::from_static(include_bytes!("../data/art/hero-skin.png"));
+        let tex = gdk::Texture::from_bytes(&bytes).expect("hero-skin.png is not a PNG");
+        assert!(tex.width() == 64 && tex.height() == 64, "hero-skin.png must be a 64x64 skin");
+        let mut bgra = vec![0u8; 64 * 64 * 4];
+        tex.download(&mut bgra, 64 * 4);
+        // GDK hands back premultiplied BGRA.
+        let rgba = bgra
+            .chunks(4)
+            .map(|p| {
+                let a = p[3];
+                let un = |c: u8| if a == 0 { 0 } else { (c as u32 * 255 / a as u32).min(255) as u8 };
+                [un(p[2]), un(p[1]), un(p[0]), a]
+            })
+            .collect();
+        Skin { rgba }
+    }
+
+    /// Linear colour of one skin texel, `None` where it's transparent.
+    fn at(&self, x: i32, y: i32) -> Option<V3> {
+        let [r, g, b, a] = self.rgba[(y.clamp(0, 63) * 64 + x.clamp(0, 63)) as usize];
+        (a >= 128).then(|| rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Piece {
+    Helmet,
+    Chestplate,
+    Pauldron,
+    Leggings,
+    Boots,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tex {
+    /// A box of the skin, by its UV origin in the 64x64 layout; the
+    /// outer layer floats a quarter pixel proud of the inner one.
+    Skin { u: i32, v: i32, outer: bool },
+    /// Armour: shells further out still, as the game draws it, open
+    /// where the skin should show through.
+    Armour(Piece),
+}
+
+impl Tex {
+    /// Shells with holes, whose inside faces can show through them.
+    fn see_through(self) -> bool {
+        matches!(self, Tex::Armour(_) | Tex::Skin { outer: true, .. })
+    }
+    fn glints(self) -> bool {
+        matches!(self, Tex::Armour(_))
+    }
 }
 
 struct Obb {
     c: V3,
     ax: [V3; 3],
     half: V3,
-    part: Part,
+    tex: Tex,
+    /// Texel grid. Outer layers and armour map their inflated boxes
+    /// onto the grid of the part they cover.
+    grid: [i32; 3],
+}
+
+struct Character {
+    parts: Vec<Obb>,
+    skin: Skin,
 }
 
 fn rot_y(v: V3, a: f32) -> V3 {
@@ -800,111 +850,268 @@ fn rot_x(v: V3, a: f32) -> V3 {
     v3(v.x, v.y * a.cos() - v.z * a.sin(), v.y * a.sin() + v.z * a.cos())
 }
 
-/// A blocky adventurer mid-stride, facing (mostly) towards the camera.
-/// Sizes are in skin pixels (1/16 block), like the game's own models.
-fn build_character() -> Vec<Obb> {
-    let yaw = 0.3;
+/// A player mid-stride towards the camera, empty-handed, built from
+/// the game's own model: sizes are in skin pixels (1/16 block) - 8x8x8
+/// head, 8x12x4 body, 3x12x4 slim arms, 4x12x4 legs. The model faces
+/// local -z, so its right side is +x.
+fn build_character() -> Character {
+    let yaw = 0.45;
     let px = 1.0 / 16.0;
     let mut parts = Vec::new();
-    // (part, centre, size, pivot, swing about X, extra yaw)
-    let defs: [(Part, V3, V3, V3, f32, f32); 6] = [
-        (Part::Head, v3(0.0, 28.0, 0.0), v3(8.0, 8.0, 8.0), v3(0.0, 24.0, 0.0), -0.08, -0.25),
-        (Part::Body, v3(0.0, 18.0, 0.0), v3(8.0, 12.0, 4.0), v3(0.0, 18.0, 0.0), 0.0, 0.0),
-        (Part::Arm, v3(-6.0, 18.0, 0.0), v3(4.0, 12.0, 4.0), v3(-6.0, 22.0, 0.0), -0.75, 0.0),
-        (Part::Arm, v3(6.0, 18.0, 0.0), v3(4.0, 12.0, 4.0), v3(6.0, 22.0, 0.0), 0.55, 0.0),
-        (Part::Leg, v3(-2.0, 6.0, 0.0), v3(4.0, 12.0, 4.0), v3(-2.0, 12.0, 0.0), 0.5, 0.0),
-        (Part::Leg, v3(2.0, 6.0, 0.0), v3(4.0, 12.0, 4.0), v3(2.0, 12.0, 0.0), -0.45, 0.0),
+    let head_turn = -0.25;
+    let right_arm = 0.4; // arms swing against the legs
+    let left_arm = -0.4;
+    let legs = 0.34;
+    // (centre, pivot, swing about X, extra yaw) for each bone.
+    let head = (v3(0.0, 28.0, 0.0), v3(0.0, 24.0, 0.0), -0.06, head_turn);
+    let body = (v3(0.0, 18.0, 0.0), v3(0.0, 18.0, 0.0), 0.0, 0.0);
+    let r_arm = (v3(5.5, 18.0, 0.0), v3(5.5, 22.0, 0.0), right_arm, 0.0);
+    let l_arm = (v3(-5.5, 18.0, 0.0), v3(-5.5, 22.0, 0.0), left_arm, 0.0);
+    let r_leg = (v3(2.0, 6.0, 0.0), v3(2.0, 12.0, 0.0), -legs, 0.0);
+    let l_leg = (v3(-2.0, 6.0, 0.0), v3(-2.0, 12.0, 0.0), legs, 0.0);
+    let sk = |u, v| Tex::Skin { u, v, outer: false };
+    let sk_out = |u, v| Tex::Skin { u, v, outer: true };
+    let arm = v3(3.0, 12.0, 4.0);
+    let leg = v3(4.0, 12.0, 4.0);
+    let out = |s: V3, k: f32| s + v3(k, k, k);
+    let shifted = |b: (V3, V3, f32, f32), dx: f32| (b.0 + v3(dx, 0.0, 0.0), b.1, b.2, b.3);
+    // (texture, bone, size, texel grid)
+    let defs = [
+        (sk(0, 0), head, v3(8.0, 8.0, 8.0), [8, 8, 8]),
+        (sk_out(32, 0), head, v3(9.0, 9.0, 9.0), [8, 8, 8]),
+        (Tex::Armour(Piece::Helmet), head, v3(10.0, 10.0, 10.0), [8, 8, 8]),
+        (sk(16, 16), body, v3(8.0, 12.0, 4.0), [8, 12, 4]),
+        (sk_out(16, 32), body, v3(8.5, 12.5, 4.5), [8, 12, 4]),
+        (Tex::Armour(Piece::Chestplate), body, v3(9.6, 13.6, 5.6), [8, 12, 4]),
+        (sk(40, 16), r_arm, arm, [3, 12, 4]),
+        (sk_out(40, 32), r_arm, out(arm, 0.5), [3, 12, 4]),
+        (Tex::Armour(Piece::Pauldron), shifted(r_arm, 0.5), v3(5.6, 13.6, 5.6), [4, 12, 4]),
+        (sk(32, 48), l_arm, arm, [3, 12, 4]),
+        (sk_out(48, 48), l_arm, out(arm, 0.5), [3, 12, 4]),
+        (Tex::Armour(Piece::Pauldron), shifted(l_arm, -0.5), v3(5.6, 13.6, 5.6), [4, 12, 4]),
+        (sk(0, 16), r_leg, leg, [4, 12, 4]),
+        (sk_out(0, 32), r_leg, out(leg, 0.5), [4, 12, 4]),
+        (Tex::Armour(Piece::Leggings), r_leg, out(leg, 1.0), [4, 12, 4]),
+        (Tex::Armour(Piece::Boots), r_leg, out(leg, 1.8), [4, 12, 4]),
+        (sk(16, 48), l_leg, leg, [4, 12, 4]),
+        (sk_out(0, 48), l_leg, out(leg, 0.5), [4, 12, 4]),
+        (Tex::Armour(Piece::Leggings), l_leg, out(leg, 1.0), [4, 12, 4]),
+        (Tex::Armour(Piece::Boots), l_leg, out(leg, 1.8), [4, 12, 4]),
     ];
-    for (part, centre, size, pivot, swing, extra_yaw) in defs {
+    for (tex, (centre, pivot, swing, extra_yaw), size, grid) in defs {
         let limb = |v: V3| rot_y(rot_x(v, swing), extra_yaw);
-        let model_c = pivot + limb(centre - pivot);
+        let model_c = pivot + rot_y(rot_x(centre - pivot, swing), extra_yaw);
         let world_c = PLAYER_POS + rot_y(model_c, yaw) * px;
         let tf = |v: V3| rot_y(limb(v), yaw);
         let ax = [tf(v3(1.0, 0.0, 0.0)), tf(v3(0.0, 1.0, 0.0)), tf(v3(0.0, 0.0, 1.0))];
-        parts.push(Obb { c: world_c, ax, half: size * (0.5 * px), part });
+        parts.push(Obb { c: world_c, ax, half: size * (0.5 * px), tex, grid });
     }
-    parts
+    Character { parts, skin: Skin::load() }
 }
 
-fn character_texel(part: Part, axis: usize, front: bool, u: i32, v: i32, size: [i32; 3]) -> V3 {
-    let skin = rgb(0xd59a6a);
-    let hair = rgb(0x4a2a14);
-    let shirt = rgb(0x2c8c88);
-    let jitter = 0.9 + r3(u, v, axis as i32, part as u32 + if front { 9 } else { 0 }) * 0.2;
-    let col = match part {
-        Part::Head => match (axis, front) {
-            (1, top) => if top { hair } else { skin },
-            (2, true) => {
-                if v < 2 || (v == 2 && (u == 0 || u == 7)) {
-                    hair
-                } else if v == 4 && (u == 1 || u == 6) {
-                    rgb(0xf0f0f0)
-                } else if v == 4 && (u == 2 || u == 5) {
-                    rgb(0x2a6a4a)
-                } else if v == 6 && (3..5).contains(&u) {
-                    rgb(0xa66a46)
-                } else {
-                    skin
-                }
-            }
-            (2, false) => if v < 7 { hair } else { skin },
-            _ => if v < 3 || (u >= 4 && v < 6) { hair } else { skin },
-        },
-        Part::Body => {
-            if v >= size[1] - 2 {
-                rgb(0x5a3a20)
-            } else if axis == 2 && front && v < 1 && (3..5).contains(&u) {
-                skin
-            } else if (u + v) % 5 == 0 {
-                rgb(0x237370)
-            } else {
-                shirt
-            }
-        }
-        Part::Arm => if v < 5 { shirt } else { skin },
-        Part::Leg => if v < 9 { rgb(0x2f3a6a) } else { rgb(0x4a3020) },
+/// Which side of a box a ray hit, in the model's own terms.
+#[derive(Clone, Copy, PartialEq)]
+enum Side {
+    Front,
+    Back,
+    Top,
+    Bottom,
+    /// The model's right (+x) and left sides.
+    Right,
+    Left,
+}
+
+/// The skin texel for a cell of a box whose net starts at (`u0`, `v0`),
+/// using the game's layout: top and bottom above, then right side,
+/// front, left side and back in a row. `c` counts cells from the box's
+/// left (-x), bottom and front corner.
+fn skin_texel(skin: &Skin, u0: i32, v0: i32, side: Side, c: [i32; 3], g: [i32; 3]) -> Option<V3> {
+    let [w, h, d] = g;
+    let row = v0 + d + (h - 1 - c[1]);
+    let (x, y) = match side {
+        Side::Front => (u0 + d + (w - 1 - c[0]), row),
+        Side::Back => (u0 + 2 * d + w + c[0], row),
+        Side::Right => (u0 + (d - 1 - c[2]), row),
+        Side::Left => (u0 + d + w + c[2], row),
+        Side::Top => (u0 + d + (w - 1 - c[0]), v0 + (d - 1 - c[2])),
+        Side::Bottom => (u0 + d + w + (w - 1 - c[0]), v0 + c[2]),
     };
-    col * jitter
+    skin.at(x, y)
 }
 
-fn trace_character(parts: &[Obb], o: V3, d: V3, tmax: f32) -> Option<Hit> {
+/// Netherite armour with a redstone-red trim, painted from per-face
+/// maps (rows top down, columns left to right as you face it; sides run
+/// front to back): `.` plate, `h` raised plate, `d` seam, `r`/`R` trim
+/// and its glinting edge, ` ` open. Plates get a lit top edge and a
+/// shadowed bottom edge wherever they border an opening.
+fn armour_texel(map: &[&str], u: i32, v: i32, n: f32) -> Option<V3> {
+    let at = |u: i32, v: i32| -> u8 {
+        if v < 0 || u < 0 {
+            return b'.';
+        }
+        map.get(v as usize).and_then(|r| r.as_bytes().get(u as usize).copied()).unwrap_or(b' ')
+    };
+    let c = at(u, v);
+    // Netherite: a dark, faintly purple-brown alloy in three tones.
+    let plate = if n < 0.3 {
+        rgb(0x2f282b)
+    } else if n < 0.75 {
+        rgb(0x3a3135)
+    } else {
+        rgb(0x463c40)
+    };
+    let bevel = if at(u, v - 1) == b' ' {
+        1.35
+    } else if at(u, v + 1) == b' ' || v as usize == map.len() - 1 {
+        0.7
+    } else {
+        1.0
+    };
+    Some(match c {
+        b' ' => return None,
+        b'h' => mix(rgb(0x564b4f), rgb(0x62575b), n),
+        b'd' => rgb(0x1f191c),
+        b'r' => mix(rgb(0x8a1016), rgb(0xa8161c), n) * bevel,
+        b'R' => mix(rgb(0xc42420), rgb(0xd8342a), n),
+        _ => plate * bevel,
+    })
+}
+
+fn armour_map(piece: Piece, side: Side) -> &'static [&'static str] {
+    match (piece, side) {
+        // Open at the face, with a nose guard down the middle.
+        (Piece::Helmet, Side::Front) => {
+            &["hhhhhhhh", "h..rr..h", ".  dd  .", ".  dd  .", ".      .", "r      r", ".      .", "d      d"]
+        }
+        (Piece::Helmet, Side::Back) => {
+            &["hhhhhhhh", "........", "...rr...", "..r..r..", "........", "........", "d......d", "dddddddd"]
+        }
+        (Piece::Helmet, Side::Top) => {
+            &["hhhhhhhh", "h......h", "h..rr..h", "h.r..r.h", "h.r..r.h", "h..rr..h", "h......h", "hhhhhhhh"]
+        }
+        (Piece::Helmet, Side::Bottom) => &[],
+        (Piece::Helmet, _) => {
+            &["hhhhhhhh", "........", "..r..r..", "...rr...", "........", "d......d", "........", "dddddddd"]
+        }
+        // Open at the collar so the shirt shows; a trim chevron across
+        // the chest.
+        (Piece::Chestplate, Side::Front) => &[
+            "hhh  hhh", ".hd  dh.", "..hddh..", "r......r", ".r....r.", "..rRRr..", "...dd...", "d......d", "........",
+            "..d..d..", "hhhhhhhh", "dddddddd",
+        ],
+        (Piece::Chestplate, Side::Back) => &[
+            "hhhhhhhh", "h......h", "........", "..rRRr..", "........", "...dd...", "d......d", "........",
+            "..d..d..", "........", "hhhhhhhh", "dddddddd",
+        ],
+        (Piece::Chestplate, Side::Top) => &["hhh  hhh", "h.h  h.h", "h.h  h.h", "hhhhhhhh"],
+        (Piece::Chestplate, Side::Bottom) => &[],
+        (Piece::Chestplate, _) => {
+            &["hhhh", "....", "r..r", "....", "d..d", "....", "....", "....", "d..d", "....", "hhhh", "dddd"]
+        }
+        // Shoulder guards over the upper arm, then the coat sleeve.
+        (Piece::Pauldron, Side::Top) => &["hhhh", "h..h", "h..h", "hhhh"],
+        (Piece::Pauldron, Side::Bottom) => &[],
+        (Piece::Pauldron, _) => &["hhhh", "h..h", "rRRr", "....", "d..d", "....", "....", "hhhh", "dddd"],
+        // Leggings down to the knee...
+        (Piece::Leggings, Side::Top | Side::Bottom) => &[],
+        (Piece::Leggings, _) => &["hhhh", "....", "r..r", ".rr.", "....", "d..d", "....", "....", "dddd"],
+        // ...then the boots, with a turned-down cuff.
+        (Piece::Boots, Side::Top) => &[],
+        (Piece::Boots, Side::Bottom) => &["dddd", "dddd", "dddd", "dddd"],
+        (Piece::Boots, _) => &["", "", "", "", "", "", "", "", "hhhh", ".rr.", "....", "dddd"],
+    }
+}
+
+/// The purple shimmer enchanted gear gets: diagonal bands sweeping
+/// across the surface in world space.
+fn enchant_glint(p: V3) -> V3 {
+    let band = (0.5 + 0.5 * ((p.x - p.z) * 6.0 + p.y * 9.0).sin()).powf(6.0);
+    let fine = 0.5 + 0.5 * ((p.x + p.z) * 23.0 - p.y * 11.0).sin();
+    v3(0.30, 0.10, 0.75) * (0.012 + band * 0.045 + fine * band * 0.02)
+}
+
+fn part_texel(ch: &Character, tex: Tex, side: Side, c: [i32; 3], g: [i32; 3]) -> Option<V3> {
+    let n = r3(c[0] * 7 + c[2], c[1], side as i32, 3);
+    match tex {
+        Tex::Skin { u, v, .. } => skin_texel(&ch.skin, u, v, side, c, g),
+        Tex::Armour(piece) => {
+            // As you face each side: left to right, top down.
+            let (u, v) = match side {
+                Side::Front => (g[0] - 1 - c[0], g[1] - 1 - c[1]),
+                Side::Back => (c[0], g[1] - 1 - c[1]),
+                Side::Right | Side::Left => (c[2], g[1] - 1 - c[1]),
+                Side::Top | Side::Bottom => (c[0], c[2]),
+            };
+            armour_texel(armour_map(piece, side), u, v, n)
+        }
+    }
+}
+
+fn trace_character(ch: &Character, o: V3, d: V3, tmax: f32) -> Option<Hit> {
     let mut best: Option<Hit> = None;
-    for p in parts {
+    for p in &ch.parts {
         let rel = o - p.c;
         let lo_ = v3(rel.dot(p.ax[0]), rel.dot(p.ax[1]), rel.dot(p.ax[2]));
         let ld = v3(d.dot(p.ax[0]), d.dot(p.ax[1]), d.dot(p.ax[2]));
-        let Some((t, _, axis)) = ray_box(lo_, ld, -p.half, p.half) else { continue };
-        if t <= 0.0 || t > tmax || best.as_ref().is_some_and(|b| b.t < t) {
+        let Some((t0, t1, axis)) = ray_box(lo_, ld, -p.half, p.half) else { continue };
+        if t0 <= 0.0 || t0 > tmax || best.as_ref().is_some_and(|b| b.t < t0) {
             continue;
         }
-        let lp = lo_ + ld * t;
-        let sign = -ld.get(axis).signum();
-        let n = p.ax[axis] * sign;
-        let size = [
-            (p.half.x * 32.0).round() as i32,
-            (p.half.y * 32.0).round() as i32,
-            (p.half.z * 32.0).round() as i32,
-        ];
-        let pxc = |i: usize| (((lp.get(i) + p.half.get(i)) * 16.0) as i32).clamp(0, size[i] - 1);
-        // The model faces local -z. For the Y axis, `front` instead
-        // means "the top face".
-        let front = if axis == 1 { sign > 0.0 } else { sign < 0.0 };
-        let (u, v) = match axis {
-            0 => (pxc(2), size[1] - 1 - pxc(1)),
-            1 => (pxc(0), pxc(2)),
-            _ => (pxc(0), size[1] - 1 - pxc(1)),
-        };
-        let col = character_texel(p.part, axis, front, u, v, size);
-        best = Some(Hit { t, n, col, emit: V3::default(), flat: true });
+        // Shells have holes, so a ray through one can still hit the
+        // far side from the inside; try entry, then exit.
+        for (t, axis, inside) in [(t0, axis, false), (t1, exit_axis(lo_, ld, p.half, t1), true)] {
+            if t > tmax || best.as_ref().is_some_and(|b| b.t < t) || (inside && !p.tex.see_through()) {
+                continue;
+            }
+            let lp = lo_ + ld * t;
+            // Which face: from outside, the one the ray enters through;
+            // from inside, the one it's nearest.
+            let sign = if inside { lp.get(axis).signum() } else { -ld.get(axis).signum() };
+            let n = p.ax[axis] * if inside { -sign } else { sign };
+            let g = p.grid;
+            let cell = |i: usize| {
+                let f = (lp.get(i) + p.half.get(i)) / (2.0 * p.half.get(i));
+                ((f * g[i] as f32) as i32).clamp(0, g[i] - 1)
+            };
+            // Cells from the left (-x), bottom and front (-z) corner.
+            let c = [cell(0), cell(1), cell(2)];
+            let side = match axis {
+                0 if sign > 0.0 => Side::Right,
+                0 => Side::Left,
+                1 if sign > 0.0 => Side::Top,
+                1 => Side::Bottom,
+                _ if sign < 0.0 => Side::Front,
+                _ => Side::Back,
+            };
+            let Some(col) = part_texel(ch, p.tex, side, c, g) else {
+                continue;
+            };
+            let col = if inside { col * 0.5 } else { col };
+            let emit = if p.tex.glints() { enchant_glint(o + d * t) } else { V3::default() };
+            best = Some(Hit { t, n, col, emit, flat: true });
+            break;
+        }
     }
     best
+}
+
+/// The axis whose slab a ray leaves a box through at `t`.
+fn exit_axis(o: V3, d: V3, half: V3, t: f32) -> usize {
+    let p = o + d * t;
+    (0..3)
+        .min_by(|&a, &b| {
+            let ea = (p.get(a).abs() - half.get(a)).abs();
+            let eb = (p.get(b).abs() - half.get(b)).abs();
+            ea.total_cmp(&eb)
+        })
+        .unwrap()
 }
 
 // ─── Shading ────────────────────────────────────────────────────────
 
 struct Scene {
     world: World,
-    character: Vec<Obb>,
+    character: Character,
 }
 
 fn occluded(s: &Scene, p: V3, d: V3) -> bool {
@@ -928,15 +1135,29 @@ fn ambient_occlusion(w: &World, p: V3, n: V3) -> f32 {
     1.0 - occ * 0.075
 }
 
-const SUN_COL: V3 = v3(2.8, 1.65, 0.7);
-const AMBIENT: V3 = v3(0.11, 0.035, 0.03);
-const MAX_DIST: f32 = 150.0;
+const SUN_COL: V3 = v3(2.6, 0.78, 0.18);
+const AMBIENT: V3 = v3(0.12, 0.075, 0.065);
+/// Light on surfaces from the glow beyond: warm, but much less saturated
+/// than the haze, so block textures keep their own colours.
+const SURFACE_LIGHT: V3 = v3(2.3, 1.3, 0.85);
+/// The haze's own glow, lit from every side by the lava sea.
+const FOG_COL: V3 = v3(0.26, 0.045, 0.008);
+const MAX_DIST: f32 = 180.0;
+
+/// Henyey-Greenstein forward scattering towards the backlight.
+fn fog_phase(d: V3) -> f32 {
+    let g = 0.55;
+    (1.0 - g * g) / (1.0 + g * g - 2.0 * g * d.dot(sun_dir())).powf(1.5) * 0.25
+}
+
+fn fog_inscatter(sun: f32, glow: V3, phase: f32) -> V3 {
+    SUN_COL * (sun * phase * 0.6) + glow * 0.1 + FOG_COL
+}
 
 fn background(d: V3) -> V3 {
-    // Past the end of the cavern: hot haze, brightest straight ahead.
-    let ahead = d.z.max(0.0).powf(4.0);
-    let up = d.y.max(0.0);
-    v3(1.6, 0.6, 0.22) * (0.4 + ahead) + v3(2.0, 1.3, 0.7) * up * up
+    // Past the edge of the world: nothing but haze, so it melts into
+    // the fog as if it went on forever.
+    fog_inscatter(1.0, V3::default(), fog_phase(d))
 }
 
 fn shade_ray(s: &Scene, o: V3, d: V3, jitter: f32) -> V3 {
@@ -953,35 +1174,37 @@ fn shade_ray(s: &Scene, o: V3, d: V3, jitter: f32) -> V3 {
             let lit_p = p + h.n * 0.02;
             let sd = sun_dir();
             let ndl = h.n.dot(sd).max(0.0);
-            let direct = if ndl > 0.0 && !occluded(s, lit_p, sd) { SUN_COL * ndl } else { V3::default() };
+            let direct = if ndl > 0.0 && !occluded(s, lit_p, sd) { SURFACE_LIGHT * (ndl * 0.15) } else { V3::default() };
             let block = sample_grid(&s.world.light, p + h.n * 0.5);
             let ao = if h.flat { 1.0 } else { ambient_occlusion(&s.world, p, h.n) };
             let mut light = direct + block * ao + AMBIENT * ((0.75 + 0.25 * h.n.y) * ao);
             if is_char {
-                // A soft key from camera-left so the hero reads clearly.
+                // A soft key from camera-left so the hero reads clearly,
+                // and a hot rim from the lava glow behind them.
                 let key = v3(-0.6, 0.5, -0.65).norm();
-                light = light + v3(1.0, 0.55, 0.32) * (h.n.dot(key).max(0.0) * 0.9) + v3(0.1, 0.05, 0.05);
+                let rim = v3(0.5, 0.2, 1.0).norm();
+                light = light
+                    + v3(1.0, 0.6, 0.4) * (h.n.dot(key).max(0.0) * 1.1)
+                    + v3(2.2, 0.8, 0.2) * h.n.dot(rim).max(0.0)
+                    + v3(0.12, 0.07, 0.07);
             }
             (h.col * light + h.emit, h.t)
         }
     };
 
-    // Volumetric fog: warm haze, sun shafts where the canopy lets light
-    // through, and glow around every emitter.
-    let sd = sun_dir();
-    let cos = d.dot(sd);
-    let g = 0.55;
-    let phase = (1.0 - g * g) / (1.0 + g * g - 2.0 * g * cos).powf(1.5) * 0.25;
+    // Volumetric fog: thick orange haze, backlit, with shafts where the
+    // cliffs let the light through and a glow around every emitter.
+    let phase = fog_phase(d);
     let steps = ((t_end / 0.7) as usize).clamp(4, 200);
     let dt = t_end / steps as f32;
     let mut trans = 1.0;
     let mut scatter = V3::default();
     for i in 0..steps {
         let p = o + d * ((i as f32 + jitter) * dt);
-        let density = 0.010 + 0.022 * (-(p.y - 1.0).max(0.0) / 7.0).exp();
+        let density = 0.016 + 0.006 * (-(p.y - SEA as f32).max(0.0) / 6.0).exp();
         let sun = sample_grid(&s.world.sun, p);
         let glow = sample_grid(&s.world.light, p);
-        let inscatter = SUN_COL * (sun * phase * 3.2) + glow * 0.3 + v3(0.15, 0.045, 0.018);
+        let inscatter = fog_inscatter(sun, glow, phase);
         scatter = scatter + inscatter * (trans * density * dt);
         trans *= (-density * dt).exp();
     }
@@ -1002,14 +1225,18 @@ impl Hdr {
     }
 }
 
-fn render_hero(width: usize, height: usize, ss: usize) -> Hdr {
+/// `closeup` frames just the character, for checking the skin and pose.
+fn render_hero(width: usize, height: usize, ss: usize, closeup: bool) -> Hdr {
     let scene = Scene { world: build_world(), character: build_character() };
-    let eye = v3(35.8, 3.5, -1.5);
-    let pitch: f32 = 0.06;
+    let (eye, pitch, fov): (V3, f32, f32) = if closeup {
+        (PLAYER_POS + v3(0.0, 1.25, -4.8), -0.02, 50.0)
+    } else {
+        (PLAYER_POS + v3(-0.5, 5.0, -10.0), -0.33, 70.0)
+    };
     let fwd = v3(0.0, pitch.sin(), pitch.cos()).norm();
     let right = fwd.cross(v3(0.0, 1.0, 0.0)).norm() * -1.0;
     let up = right.cross(fwd) * -1.0;
-    let tan_h = (78.0f32.to_radians() / 2.0).tan();
+    let tan_h = (fov.to_radians() / 2.0).tan();
     let tan_v = tan_h * height as f32 / width as f32;
 
     let mut px = vec![V3::default(); width * height];
@@ -1043,7 +1270,7 @@ fn render_hero(width: usize, height: usize, ss: usize) -> Hdr {
 /// Floating embers, drawn into the HDR buffer so bloom picks them up.
 fn add_embers(img: &mut Hdr) {
     let scale = img.w as f32 / 1920.0;
-    for i in 0..140 {
+    for i in 0..90 {
         let rx = r3(i, 0, 0, 501);
         let ry = r3(i, 1, 0, 501);
         // Bias towards the middle band and lower half, like drifting
@@ -1122,7 +1349,9 @@ fn finish_hero(img: &Hdr) -> Vec<u8> {
             let mut c = img.at(x, y) + wide[by * bw + bx] * 0.5 + tight[by * bw + bx] * 0.35;
             let (u, v) = (x as f32 / img.w as f32 - 0.5, y as f32 / img.h as f32 - 0.5);
             let vignette = 1.0 - (u * u * 1.1 + v * v * 1.3).min(1.0) * 0.75;
-            c = c * (1.1 * vignette);
+            // A touch more saturation for the punchy key-art look.
+            let luma = c.dot(v3(0.2126, 0.7152, 0.0722));
+            c = mix(v3(luma, luma, luma), c, 1.05) * (1.1 * vignette);
             let dither = (r3(x as i32, y as i32, 0, 909) - 0.5) / 255.0;
             for ch in [c.x, c.y, c.z] {
                 let srgb = aces(ch).powf(1.0 / 2.2) + dither;
@@ -1369,6 +1598,7 @@ fn save_png(path: &Path, w: u32, h: u32, data: Vec<u8>, has_alpha: bool) {
 
 fn main() {
     let preview = std::env::args().any(|a| a == "preview");
+    let closeup = std::env::args().any(|a| a == "closeup");
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/art");
     std::fs::create_dir_all(&out_dir).unwrap();
 
@@ -1377,13 +1607,21 @@ fn main() {
     let grass = render_grass_block(48);
     save_png(&out_dir.join("grass_block.png"), grass.width, grass.height, grass.rgba, true);
 
-    let (w, h, ss) = if preview { (960, 540, 1) } else { (1920, 1080, 3) };
+    let (w, h, ss) = if preview || closeup { (960, 540, 2) } else { (1920, 1080, 3) };
     let started = std::time::Instant::now();
-    let mut hdr = render_hero(w, h, ss);
-    add_embers(&mut hdr);
+    let mut hdr = render_hero(w, h, ss, closeup);
+    if !closeup {
+        add_embers(&mut hdr);
+    }
     let rgb_bytes = finish_hero(&hdr);
-    let name = if preview { "hero-preview.png" } else { "hero.png" };
-    let path = if preview {
+    let name = if closeup {
+        "hero-closeup.png"
+    } else if preview {
+        "hero-preview.png"
+    } else {
+        "hero.png"
+    };
+    let path = if preview || closeup {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(name)
     } else {
         out_dir.join(name)

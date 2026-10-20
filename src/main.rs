@@ -2071,7 +2071,7 @@ fn build_ui(app: &Application) {
     let (accounts_panel, accounts_items) = dropdown_panel("ACCOUNTS", &add_account_btn);
     accounts_panel.set_valign(gtk::Align::Start);
     accounts_panel.set_margin_top(96);
-    accounts_panel.set_margin_start(8);
+    accounts_panel.set_margin_start(12);
     home_page.add_overlay(&accounts_panel);
 
     let new_install_item = dropdown_item(
